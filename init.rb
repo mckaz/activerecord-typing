@@ -26,6 +26,7 @@ end
 
 class Item < ActiveRecord::Base
   belongs_to :person
+  has_many :jobs
 end
 
 class Job < ActiveRecord::Base
@@ -36,6 +37,7 @@ end
 ### The below files must be loaded *after* model class definitions above.
 require './types'
 require './tests'
+require './gen_schema'
 
 ## Migrations were written by hand here, but are auto-generated in a railsapp
 class CreatePersonsTable < ActiveRecord::Migration[5.0]
@@ -93,9 +95,9 @@ class CreateJobsTable < ActiveRecord::Migration[5.0]
 end
 
 # Feeding the types in manually for now
-RDL::Globals.db_schema[:Person] = RDL::Globals.parser.scan_str "#T Person<{id: Integer, first_name: String, last_name: String, created_at: DateTime, updated_at: DateTime, item_id: String, __associations: {has_many: :items}}>"
-RDL::Globals.db_schema[:Item] = RDL::Globals.parser.scan_str "#T Item<{id: Integer, person_id: Integer, name: String, created_at: DateTime, updated_at: DateTime, __associations: {belongs_to: :person}}>"
-RDL::Globals.db_schema[:Job] = RDL::Globals.parser.scan_str "#T Job<{id: Integer, name: String, job: String, __associations: {belongs_to: :person or :item}}>"
+#RDL::Globals.db_schema[:Person] = RDL::Globals.parser.scan_str "#T Person<{id: Integer, first_name: String, last_name: String, created_at: DateTime, updated_at: DateTime, item_id: String, __associations: {has_many: :items}}>"
+#RDL::Globals.db_schema[:Item] = RDL::Globals.parser.scan_str "#T Item<{id: Integer, person_id: Integer, name: String, created_at: DateTime, updated_at: DateTime, __associations: {belongs_to: :person, has_many: :jobs}}>"
+#RDL::Globals.db_schema[:Job] = RDL::Globals.parser.scan_str "#T Job<{id: Integer, name: String, job: String, __associations: {belongs_to: :item or :person}}>"
 
 def run
   CreatePersonsTable.migrate(:up)

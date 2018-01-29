@@ -228,6 +228,21 @@ class DBType
   def joins_test12()
     Job.joins(:item, :person).where(people: {first_name: 'milod'}).first
   end
+
+  type '() -> Job', wrap: false, typecheck: :later
+  def joins_test13()
+    Job.joins(:item, :person).where(people: {items: {name: 'blah'}}).first
+  end
+
+  type '() -> Job', wrap: false, typecheck: :later
+  def joins_test14()
+    Job.joins(:item).joins(:person).where(people: {items: {name: 'blah'}}).first
+  end
+
+  type '() -> Item', wrap: false, typecheck: :later
+  def joins_test15()
+    Item.joins(jobs: :person).where(people: {jobs: {job: 'blah'}}).first
+  end
   
   type '() -> ActiveRecord_Relation<JoinTable<Person, Job>>', wrap: false, typecheck: :jfail1
   def joins_fail1()
@@ -258,9 +273,20 @@ class DBType
   def joins_fail6()
     Job.joins(:person, :itemsss)
   end
+
+  type '() -> Job', wrap: false, typecheck: :jfail7
+  def joins_fail7()
+    Job.joins(:item, :person).where(people: {items: {asfd: 'blah'}}).first
+  end
+
+  type '() -> Job', wrap: false, typecheck: :jfail8
+  def joins_fail8()
+    Person.joins(:item).joins(:job).first
+  end
+ 
   
   def self.join_fail_tests
-    labels = [:jfail1, :jfail2, :jfail3, :jfail4, :jfail5, :jfail6]
+    labels = [:jfail1, :jfail2, :jfail3, :jfail4, :jfail5, :jfail6, :jfail7, :jfail8]
     labels.each { |label|
       Minitest::Test.new(nil).assert_raises(RDL::Typecheck::StaticTypeError) { RDL.do_typecheck label }
     }

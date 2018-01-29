@@ -64,6 +64,7 @@ module ActiveRecord::Querying
   type :exists?, '() -> %bool', wrap: false
   type :exists?, '(Integer or String) -> %bool', wrap: false
   type :exists?, '(``DBType.exists_input_type(trec, targs)``) -> %bool', wrap: false
+  type :group, '(Symbol) -> ``RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), DBType.rec_to_nominal(trec))``'
 
 
   type :where, '(``DBType.where_input_type(trec, targs)``) -> ``RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), DBType.rec_to_nominal(trec))``', wrap: false
@@ -72,8 +73,8 @@ module ActiveRecord::Querying
   type :where, '() -> ``RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord::QueryMethods::WhereChain), DBType.rec_to_nominal(trec))``', wrap: false
 
 
-  type :joins, '(``DBType.joins_one_input_type(trec, targs)``) -> ``DBType.joins_one_in_output(trec, targs)``', wrap: false
-  type :joins, '(``DBType.joins_multi_input_type(trec, targs)``, Symbol, *Symbol) -> ``DBType.joins_multi_output(trec, targs)``', wrap: false
+  type :joins, '(``DBType.joins_one_input_type(trec, targs)``) -> ``DBType.joins_output(trec, targs)``', wrap: false
+  type :joins, '(``DBType.joins_multi_input_type(trec, targs)``, Symbol or Hash, *Symbol or Hash) -> ``DBType.joins_output(trec, targs)``', wrap: false
 
 
 end
@@ -81,11 +82,16 @@ end
 module ActiveRecord::QueryMethods
   extend RDL::Annotate
   ## Types from this module are used when receiver is ActiveRecord_relation
-  
+
+  type :group, '(Symbol) -> ``RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), trec.params[0])``', wrap: false
   type :where, '(``DBType.where_input_type(trec, targs)``) -> ``RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), trec.params[0])``', wrap: false
   type :where, '(String, Hash) -> ``RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), trec.params[0])``', wrap: false
   type :where, '(String, *String) -> ``RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), trec.params[0])``', wrap: false
   type :where, '() -> ``DBType.where_noarg_output_type(trec)``', wrap: false
+
+  type :joins, '(``DBType.joins_one_input_type(trec, targs)``) -> ``DBType.joins_output(trec, targs)``', wrap: false
+  type :joins, '(``DBType.joins_multi_input_type(trec, targs)``, Symbol, *Symbol) -> ``DBType.joins_output(trec, targs)``', wrap: false
+
 
 end
 
@@ -180,15 +186,21 @@ class DBType
         when RDL::Type::NominalType
           ## just one table joined to base table
           joined_name = param.params[1].klass.to_s.singularize.to_sym
-          joined_type = table_name_to_schema_type(joined_name, check_col)
-          type_hash[joined_name.to_s.pluralize.downcase.to_sym] = RDL::Type::OptionalType.new(joined_type) ## type queries on joined tables use the joined table's plural name
+          joined_type = RDL::Type::OptionalType.new(table_name_to_schema_type(joined_name, check_col))
+          type_hash[joined_name.to_s.pluralize.downcase.to_sym] = joined_type ## type queries on joined tables use the joined table's plural name
         when RDL::Type::UnionType
           ## multiple tables joined to base table
-          jtypes = []
+          joined_hash = {} ## this will be hash mapping plural table names to their type schema. will be necessary for nested hash calls                  
           param.params[1].types.each { |t|
             joined_name = t.klass.to_s.singularize.to_sym
             joined_type = table_name_to_schema_type(joined_name, check_col)
-            type_hash[joined_name.to_s.pluralize.downcase.to_sym] = RDL::Type::OptionalType.new(joined_type) ## type queries on joined tables use the joined table's plural name
+            joined_hash[joined_name.to_s.pluralize.downcase.to_sym] = joined_type #RDL::Type::OptionalType.new(joined_type) ## type queries on joined tables use the joined table's plural name
+          }
+          joined_hash.each { |k1, v1|
+            joined_hash.each { |k2, v2|
+              v1.elts[k2] = RDL::Type::OptionalType.new(v2)
+              type_hash[k1] = RDL::Type::OptionalType.new(v1)
+            }
           }
         else
           raise "unexpected type #{trec}"
@@ -305,12 +317,38 @@ class DBType
 
   def self.joins_one_input_type(trec, targs)
     return RDL::Globals.types[:top] unless targs.size == 1 ## trivial case, won't be matched
+    case trec
+    when RDL::Type::SingletonType
+      base_klass = trec.val 
+    when RDL::Type::GenericType
+      raise "Unexpected type #{trec}." unless (trec.base.klass == ActiveRecord_Relation)
+      param = trec.params[0]
+      case param
+      when RDL::Type::GenericType
+        raise "Unexpected type #{trec}." unless (param.base.klass == JoinTable)
+        base_klass = param.params[0].klass
+      when RDL::Type::NominalType
+        base_klass = param.klass
+      else
+        raise "unexpected parameter type in #{trec}"
+      end
+    else
+      raise "unexpected receiver type #{trec}"
+    end
     case targs[0]
     when RDL::Type::SingletonType
       sym = targs[0].val
       raise RDL::Typecheck::StaticTypeError, "Unexpected arg type #{trec} in call to joins." unless sym.is_a?(Symbol)
-      rec_klass = trec.val ## this method should only be called when trec is a class singleton
-      raise RDL::Typecheck::StaticTypeError, "#{trec} has no association to #{targs[0]}, cannot perform joins." unless associated_with?(rec_klass, sym)
+      raise RDL::Typecheck::StaticTypeError, "#{trec} has no association to #{targs[0]}, cannot perform joins." unless associated_with?(base_klass, sym)
+      return targs[0]
+    when RDL::Type::FiniteHashType
+      targs[0].elts.each { |key, val|
+        raise RDL::Typecheck::StaticTypeError, "Unexpected hash arg type #{targs[0]} in call to joins." unless key.is_a?(Symbol) && val.is_a?(RDL::Type::SingletonType) && val.val.is_a?(Symbol)
+        val_sym = val.val
+        raise RDL::Typecheck::StaticTypeError, "#{trec} has no association to #{key}, cannot perform joins." unless associated_with?(base_klass, key)
+        key_klass = key.to_s.singularize.camelize
+        raise RDL::Typecheck::StaticTypeError, "#{key} has no association to #{val_sym}, cannot perform joins." unless associated_with?(key_klass, val_sym)
+      }
       return targs[0]
     else
       raise RDL::Typecheck::StaticTypeError, "Unexpected arg type #{targs[0]} in call to joins."
@@ -320,15 +358,7 @@ class DBType
   def self.joins_multi_input_type(trec, targs)
     return RDL::Globals.types[:top] unless targs.size > 1 ## trivial case, won't be matched
     targs.each { |arg|
-      case arg
-      when RDL::Type::SingletonType
-        sym = arg.val
-        raise RDL::Typecheck::StaticTypeError, "Unexpected arg type #{trec} in call to joins." unless sym.is_a?(Symbol)
-        rec_klass = trec.val ## this method should only be called when trec is a class singleton
-        raise RDL::Typecheck::StaticTypeError, "#{trec} has no association to #{arg}, cannot perform joins." unless associated_with?(rec_klass, sym)
-      else
-        raise RDL::Typecheck::StaticTypeError, "Unexpected arg type #{targs[0]} in call to joins."
-      end
+      joins_one_input_type(trec, [arg])
     }
     return targs[0] ## since this method is called as first argument in type
   end
@@ -356,19 +386,53 @@ class DBType
     return false
   end
 
-  def self.joins_one_in_output(trec, targs)
-    return RDL::Globals.types[:top] unless targs.size == 1 ## trivial case, won't be matched
-    raise RDL::Typecheck::StaticTypeError, "Unexpected joins arg type #{targs[0]}" unless targs[0].is_a?(RDL::Type::SingletonType) && (targs[0].val.class == Symbol)
-    arg_kl = targs[0].val.to_s.singularize.camelize
-    jt = RDL::Type::GenericType.new(RDL::Type::NominalType.new(JoinTable), rec_to_nominal(trec), RDL::Type::NominalType.new(arg_kl))
-    RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), jt)
+  def self.get_joined_args(targs)
+    arg_types = []
+    targs.each { |arg|
+    case arg
+    when RDL::Type::SingletonType
+      raise RDL::Typecheck::StaticTypeError, "Unexpected joins arg type #{arg}" unless (arg.val.class == Symbol)
+      arg_types << RDL::Type::NominalType.new(arg.val.to_s.singularize.camelize)
+    when RDL::Type::FiniteHashType
+      hsh = arg.elts
+      raise 'not supported' unless hsh.size == 1
+      key, val = hsh.first
+      val = val.val
+      arg_types << RDL::Type::UnionType.new(RDL::Type::NominalType.new(key.to_s.singularize.camelize), RDL::Type::NominalType.new(val.to_s.singularize.camelize))
+    else
+      raise "Unexpected arg type #{arg} to joins."
+    end
+    }
+    if arg_types.size > 1
+      return RDL::Type::UnionType.new(*targs.map { |arg| RDL::Type::NominalType.new(arg.val.to_s.singularize.camelize)})
+    elsif arg_types.size == 1
+      return arg_types[0]
+    else
+      raise "oops, didn't expect to get here."
+    end
   end
-
-  def self.joins_multi_output(trec, targs)
-    return RDL::Globals.types[:top] unless targs.size > 1 ## trivial case, won't be matched
-    targs.each { |arg| raise RDL::Typecheck::StaticTypeError, "Unexpected joins arg type #{arg}" unless arg.is_a?(RDL::Type::SingletonType) && (arg.val.class == Symbol) }
-    ut = RDL::Type::UnionType.new(*targs.map { |arg| RDL::Type::NominalType.new(arg.val.to_s.singularize.camelize)})
-    jt = RDL::Type::GenericType.new(RDL::Type::NominalType.new(JoinTable), rec_to_nominal(trec), ut)
+  
+  def self.joins_output(trec, targs)
+    arg_type = get_joined_args(targs)
+    case trec
+    when RDL::Type::SingletonType
+      joined = arg_type
+    when RDL::Type::GenericType
+      raise "Unexpected type #{trec}." unless (trec.base.klass == ActiveRecord_Relation)
+      param = trec.params[0]
+      case param
+      when RDL::Type::GenericType
+        raise "Unexpected type #{trec}." unless (param.base.klass == JoinTable)
+        joined = RDL::Type::UnionType.new(param.params[1], arg_type)
+      when RDL::Type::NominalType
+        joined = arg_type
+      else
+        raise "unexpected parameter type in #{trec}"
+      end
+    else
+      raise "unexpected type #{trec}"
+    end
+    jt = RDL::Type::GenericType.new(RDL::Type::NominalType.new(JoinTable), rec_to_nominal(trec), joined)
     RDL::Type::GenericType.new(RDL::Type::NominalType.new(ActiveRecord_Relation), jt)
   end
 
