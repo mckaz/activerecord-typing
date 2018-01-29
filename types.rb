@@ -404,7 +404,7 @@ class DBType
     end
     }
     if arg_types.size > 1
-      return RDL::Type::UnionType.new(*targs.map { |arg| RDL::Type::NominalType.new(arg.val.to_s.singularize.camelize)})
+      return RDL::Type::UnionType.new(*arg_types)
     elsif arg_types.size == 1
       return arg_types[0]
     else
